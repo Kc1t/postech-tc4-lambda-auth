@@ -16,9 +16,18 @@ func Logger() *slog.Logger {
 	if err := level.UnmarshalText([]byte(Env("LOG_LEVEL", "info"))); err != nil {
 		level = slog.LevelInfo
 	}
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level, ReplaceAttr: renameMessage}))
 	slog.SetDefault(logger)
 	return logger
+}
+
+// renameMessage grava o texto do log em "message", o atributo que o New Relic usa como texto da
+// linha (e que os alertas por log consultam), em vez do "msg" padrão do slog.
+func renameMessage(groups []string, a slog.Attr) slog.Attr {
+	if len(groups) == 0 && a.Key == slog.MessageKey {
+		a.Key = "message"
+	}
+	return a
 }
 
 func Env(key, fallback string) string {

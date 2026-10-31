@@ -1,6 +1,9 @@
 package runtime
 
-import "testing"
+import (
+	"log/slog"
+	"testing"
+)
 
 func TestEnv(t *testing.T) {
 	t.Setenv("AUTH_TESTE", "valor")
@@ -17,5 +20,17 @@ func TestLoggerNivelInvalido(t *testing.T) {
 	t.Setenv("JWT_SECRET_TESTE", "x")
 	if Require(Logger(), "JWT_SECRET_TESTE") != "x" {
 		t.Fatal("Require deveria devolver o valor")
+	}
+}
+
+func TestRenameMessage(t *testing.T) {
+	if got := renameMessage(nil, slog.String(slog.MessageKey, "auth_issued")); got.Key != "message" {
+		t.Fatalf("msg na raiz vira message: %v", got)
+	}
+	if got := renameMessage([]string{"g"}, slog.String(slog.MessageKey, "x")); got.Key != slog.MessageKey {
+		t.Fatalf("dentro de grupo não muda: %v", got)
+	}
+	if got := renameMessage(nil, slog.String("cpf", "***")); got.Key != "cpf" {
+		t.Fatalf("outras chaves não mudam: %v", got)
 	}
 }
