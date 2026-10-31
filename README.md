@@ -222,5 +222,7 @@ Secrets do ambiente: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_
 | `internal/cpf` | 94,1% | dígitos verificadores, formatação, sequências repetidas |
 | `internal/token` | 81,8% | emissão, verificação, segredo errado, expirado, algoritmo `none` |
 | `internal/telemetry`, `mask` | 90,9% e 100% | logs com e sem transação, mascaramento |
-| `internal/runtime` | 60,0% | logger e variáveis de ambiente; o `Start` com New Relic e o `os.Exit` do `Require` só rodam dentro da Lambda |
-| **Total (`internal/`)** | **91,3%** | |
+| `internal/runtime` | 65,2% | logger (texto em `message`) e variáveis de ambiente; o `Start` com New Relic e o `os.Exit` do `Require` só rodam dentro da Lambda |
+| **Total (`internal/`)** | **91,4%** | |
+
+No SonarQube a cobertura fica em 90,5%, com o quality gate aprovado (0 bugs, 0 vulnerabilidades, 0 code smells, 0% de duplicação).
