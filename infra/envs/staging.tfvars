@@ -1,2 +1,2 @@
-environment = "staging"
-vpc_id      = "vpc-05abad32762eabfe1"
+environment   = "staging"
+k8s_namespace = "postech-homolog"

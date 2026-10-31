@@ -5,16 +5,24 @@ on:
     branches: [main, homolog]
   push:
     branches: [main, homolog]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   TF_VERSION: 1.9.8
+  GOLANGCI_LINT_VERSION: v2.15.0
+  GOSEC_VERSION: v2.30.0
+  MIN_COVERAGE: 80
 
 jobs:
-  test:
-    name: Test
+  quality:
+    name: Lint, SAST e testes
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -23,27 +31,71 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Verify go.mod is tidy
+      - name: go.mod arrumado
         run: |
           go mod tidy
           git diff --exit-code go.mod go.sum
 
-      - run: gofmt -l ./cmd ./internal | tee /tmp/fmt && test ! -s /tmp/fmt
+      - name: gofmt
+        run: test -z "$(gofmt -l ./cmd ./internal ./test)"
 
-      - run: go vet ./...
+      - run: go vet ./... && go vet -tags integration ./...
 
-      - run: go test ./... -race -cover
+      - name: golangci-lint (inclui gosec, errorlint, bodyclose, noctx)
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: ${{ env.GOLANGCI_LINT_VERSION }}
+          args: --timeout=5m --build-tags integration --output.text.path=stdout --output.checkstyle.path=golangci-report.xml
 
-      - name: Check for vulnerabilities
+      - name: gosec (relatório para o SonarQube)
+        run: |
+          go install github.com/securego/gosec/v2/cmd/gosec@${GOSEC_VERSION}
+          gosec -quiet -exclude-dir=test -fmt=sonarqube -out=gosec-report.json -no-fail ./...
+          gosec -quiet -exclude-dir=test -severity=medium -confidence=medium ./...
+
+      - name: Testes unitários com cobertura
+        run: go test ./internal/... -race -covermode=atomic -coverprofile=coverage.out
+
+      - name: Cobertura mínima de ${{ env.MIN_COVERAGE }}%
+        run: |
+          total=$(go tool cover -func=coverage.out | awk '/^total:/ {sub("%","",$3); print $3}')
+          echo "### Cobertura: ${total}%" >> "$GITHUB_STEP_SUMMARY"
+          awk -v t="$total" -v m="$MIN_COVERAGE" 'BEGIN { exit (t+0 >= m+0) ? 0 : 1 }' \
+            || { echo "::error::cobertura ${total}% abaixo de ${MIN_COVERAGE}%"; exit 1; }
+
+      - name: govulncheck
         uses: golang/govulncheck-action@v1
         with:
           go-version-file: go.mod
           go-package: ./...
 
-  plan:
-    name: Terraform Plan
-    needs: test
-    if: github.event_name == 'pull_request'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: quality-reports
+          path: |
+            coverage.out
+            golangci-report.xml
+            gosec-report.json
+          retention-days: 7
+
+  sonarqube:
+    name: SonarQube (quality gate)
+    needs: quality
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: quality-reports
+
+      - name: Análise e quality gate
+        env:
+          SONAR_PROJECT_KEY: postech-tc4-lambda-auth
+        run: .github/scripts/sonar.sh
+
+  terraform:
+    name: Terraform (fmt e validate)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -56,19 +108,20 @@ jobs:
           terraform_version: ${{ env.TF_VERSION }}
 
       - run: terraform fmt -check -recursive
-
-      - run: terraform init -backend=false
-
+      - run: terraform init -backend=false -input=false
       - run: terraform validate
 
-  # Deploy nas duas branches: homolog aplica envs/staging.tfvars (functions postech-tc3-staging-auth-*,
-  # state proprio) e main aplica producao. A Lambda cobra por invocacao, entao staging nao pesa (ADR-0010).
+  # homolog → envs/staging.tfvars (functions postech-tc4-staging-auth-*), main → produção.
+  # Só roda com a variável AWS_DEPLOY_ENABLED=true: as credenciais do Learner Lab expiram a cada
+  # sessão, e sem elas o push não deve falhar.
   deploy:
     name: Deploy
-    needs: test
-    if: github.event_name == 'push'
+    needs: [quality, sonarqube, terraform]
+    if: github.event_name != 'pull_request' && vars.AWS_DEPLOY_ENABLED == 'true'
     runs-on: ubuntu-latest
     environment: ${{ github.ref_name == 'main' && 'prod' || 'staging' }}
+    env:
+      TF_ENV: ${{ github.ref_name == 'main' && 'prod' || 'staging' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -76,7 +129,7 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Empacotar a function
+      - name: Empacotar as functions
         run: make package
 
       - uses: aws-actions/configure-aws-credentials@v4
@@ -84,39 +137,49 @@ jobs:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
-          aws-region: ${{ secrets.AWS_REGION }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
 
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TF_VERSION }}
-
-      - name: Resolver ambiente
-        run: echo "TF_ENV=${{ github.ref_name == 'main' && 'prod' || 'staging' }}" >> $GITHUB_ENV
+          terraform_wrapper: false
 
       - name: Terraform init
         working-directory: infra
         run: |
-          terraform init \
+          terraform init -input=false \
             -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
             -backend-config="key=lambda-auth/${TF_ENV}.tfstate" \
-            -backend-config="region=${{ secrets.AWS_REGION }}"
+            -backend-config="region=${{ vars.AWS_REGION || 'us-east-1' }}"
 
       - name: Terraform apply
         working-directory: infra
         env:
-          TF_VAR_database_url: ${{ secrets.POSTGRES_DSN }}
+          TF_VAR_os_service_url: ${{ vars.OS_SERVICE_URL }}
+          TF_VAR_internal_api_token: ${{ secrets.INTERNAL_API_TOKEN }}
           TF_VAR_jwt_secret: ${{ secrets.JWT_SECRET }}
-        run: terraform apply -auto-approve -var-file=envs/${TF_ENV}.tfvars
+          TF_VAR_new_relic_account_id: ${{ vars.NEW_RELIC_ACCOUNT_ID }}
+          TF_VAR_new_relic_license_key: ${{ secrets.NEW_RELIC_LICENSE_KEY }}
+        run: terraform apply -input=false -auto-approve -var-file=envs/${TF_ENV}.tfvars
+
+      - name: Smoke test do issuer
+        working-directory: infra
+        run: |
+          fn=$(terraform output -raw issuer_function_name)
+          aws lambda invoke --function-name "$fn" --cli-binary-format raw-in-base64-out \
+            --payload '{"body":"{\"cpf\":\"000\"}","requestContext":{"requestId":"ci-smoke"}}' out.json >/dev/null
+          grep -q VALIDATION_ERROR out.json || { cat out.json; exit 1; }
 
       - name: Publicar os invoke ARNs
         working-directory: infra
         run: |
           {
-            echo "### Ligar no postech-tc3-infra-k8s"
+            echo "### Ligar no postech-tc4-infra-k8s"
             echo '```hcl'
-            echo "lambda_issuer_invoke_arn     = \"$(terraform output -raw issuer_invoke_arn)\""
-            echo "lambda_authorizer_invoke_arn = \"$(terraform output -raw authorizer_invoke_arn)\""
+            echo "lambda_issuer_invoke_arn        = \"$(terraform output -raw issuer_invoke_arn)\""
+            echo "lambda_authorizer_invoke_arn    = \"$(terraform output -raw authorizer_invoke_arn)\""
             echo "lambda_issuer_function_name     = \"$(terraform output -raw issuer_function_name)\""
             echo "lambda_authorizer_function_name = \"$(terraform output -raw authorizer_function_name)\""
             echo '```'
-          } >> $GITHUB_STEP_SUMMARY
+            echo "os-service consultado: $(terraform output -raw os_service_url)"
+          } >> "$GITHUB_STEP_SUMMARY"

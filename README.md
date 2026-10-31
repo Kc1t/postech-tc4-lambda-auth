@@ -1,58 +1,72 @@
-# postech-tc3-lambda-auth
+# postech-tc4-lambda-auth
 
-**Function serverless de autenticação por CPF** do sistema de gestão de oficinas mecânicas.
+**Autenticação serverless por CPF** do sistema de gestão de oficinas mecânicas, já na arquitetura de microsserviços.
 
-Tech Challenge Fase 3 — FIAP Pós Tech SOAT.
+Tech Challenge Fase 4, FIAP Pós Tech SOAT.
 
 ## Propósito
 
-Recebe um CPF, valida o número, consulta a existência e o status do cliente no banco gerenciado e devolve um **JWT** para consumo das APIs protegidas atrás do API Gateway.
+O cliente envia o CPF e recebe um **JWT** que dá acesso às rotas protegidas do API Gateway. São duas functions:
+
+- **issuer**: valida o CPF, confere no **os-service** se o cliente existe e está ativo, e assina o token;
+- **authorizer**: Lambda authorizer do API Gateway, que valida o JWT antes de a requisição chegar aos serviços.
+
+### O que mudou da Fase 3
+
+| Fase 3 | Fase 4 |
+|---|---|
+| O issuer abria o PostgreSQL da aplicação e consultava `requesters` | O issuer chama `GET /internal/requesters/{cpf}` no os-service, com `X-Internal-Token`. Cada serviço é dono dos próprios dados |
+| Function dentro da VPC, por causa do RDS | Function fora da VPC: não precisa de banco e ganha saída para a internet sem NAT, que a extension do New Relic exige |
+| Só CloudWatch Logs | **New Relic** nas duas functions (layer da extension + `nrlambda`), com trace distribuído até o os-service e logs em contexto |
+| Erro como `{"error": "texto"}` | Mesmo envelope dos serviços: `{"error": {"code", "message"}}` |
 
 ## Tecnologias
 
-- Go 1.23 rodando em AWS Lambda (runtime `provided.al2023`, arm64)
-- `golang-jwt/v5` para emissão do token
-- `lib/pq` para acesso ao PostgreSQL gerenciado
-- Logs estruturados em JSON via `log/slog`
-- CI/CD: GitHub Actions com a credencial de sessão do AWS Academy Learner Lab
+- Go 1.26 em AWS Lambda (runtime `provided.al2023`, arm64)
+- `golang-jwt/v5` (HS256)
+- New Relic Go Agent + `nrlambda` + layer `NewRelicLambdaExtensionARM64`
+- Logs estruturados em JSON (`log/slog`), com o CPF mascarado (`***.***.***-25`)
+- Terraform (functions, log groups, layer) e GitHub Actions com SonarQube
 
 ## Arquitetura
 
-Duas funções, dois papéis distintos. Um authorizer `REQUEST` do API Gateway recebe um evento diferente do emissor e precisa responder `isAuthorized` — não dá para ser a mesma função.
-
 ```mermaid
 flowchart TB
-    cli(["Cliente"]) -->|"POST /auth {cpf}"| gw["API Gateway"]
+    cli(["Cliente"]) -->|"POST /auth {cpf}"| gw["API Gateway (HTTP API)"]
     cli -->|"Bearer JWT"| gw
 
-    gw -->|"AWS_PROXY"| iss["<b>cmd/issuer</b><br/>CPF → JWT<br/>256 MB · 15 s · na VPC"]
-    gw -.->|"REQUEST authorizer"| az["<b>cmd/authorizer</b><br/>valida HS256<br/>128 MB · 5 s · fora da VPC"]
+    gw -->|"AWS_PROXY"| iss["<b>issuer</b><br/>CPF → JWT<br/>256 MB · 10 s"]
+    gw -.->|"REQUEST authorizer"| az["<b>authorizer</b><br/>valida HS256<br/>128 MB · 5 s"]
 
-    iss -->|"SELECT document, status"| rds[("RDS PostgreSQL")]
+    iss -->|"GET /internal/requesters/{cpf}<br/>X-Internal-Token · traceparent"| nlb["NLB os-service-public"]
+    nlb --> os["os-service (EKS)"]
+    os --> pg[("PostgreSQL do os-service")]
     az -->|"isAuthorized + contexto"| gw
 
-    iss --> cw1["CloudWatch Logs"]
-    az --> cw2["CloudWatch Logs"]
+    iss -.-> nr["New Relic<br/>(extension)"]
+    az -.-> nr
 
     style iss fill:#e8f0fe,stroke:#4a7
     style az fill:#fff4e0,stroke:#d90
 ```
 
-O authorizer **não entra na VPC**: ele só verifica assinatura, e não toca no banco. Isso evita ENIs desnecessárias e reduz o cold start da função que roda em toda requisição protegida.
+O `RoundTripper` do New Relic envolve o cliente HTTP: a chamada ao os-service vira um segmento externo e leva os headers W3C (`traceparent`/`newrelic`). Por isso o trace distribuído mostra **Lambda → os-service → Postgres** em uma só linha do tempo.
 
-### Grafo de decisão — emissor
+### Grafo de decisão do issuer
 
 ```mermaid
 flowchart TD
-    e(["POST /auth"]) --> j{"JSON válido?"}
-    j -->|não| r400a(["400 · payload invalido"])
+    e(["POST /auth"]) --> j{"JSON válido?<br/>(aceita body em base64)"}
+    j -->|não| r400a(["400 · VALIDATION_ERROR"])
     j -->|sim| c{"CPF passa nos<br/>dígitos verificadores?"}
-    c -->|não| r400b(["400 · cpf invalido"])
-    c -->|sim| q["SELECT id, name, email, status<br/>FROM requesters WHERE document = $1"]
-    q --> f{"encontrou?"}
-    f -->|não| r404(["404 · cliente nao encontrado"])
-    f -->|sim| a{"status = active?"}
-    a -->|não| r403(["403 · cliente inativo"])
+    c -->|não| r400b(["400 · VALIDATION_ERROR"])
+    c -->|sim| q["GET /internal/requesters/{cpf}<br/>timeout 3 s · 2 tentativas em erro de rede/5xx"]
+    q --> u{"os-service respondeu?"}
+    u -->|"não / 5xx"| r503(["503 · UPSTREAM_UNAVAILABLE"])
+    u -->|"401/400"| r500(["500 · INTERNAL_ERROR<br/>(token interno errado)"])
+    u -->|404| r404(["404 · NOT_FOUND"])
+    u -->|200| a{"status = active?"}
+    a -->|não| r403(["403 · FORBIDDEN"])
     a -->|sim| sign["assina HS256"]
     sign --> ok(["200 · access_token"])
 
@@ -60,20 +74,22 @@ flowchart TD
     style r400b fill:#ffe4e1,stroke:#c66
     style r404 fill:#ffe4e1,stroke:#c66
     style r403 fill:#ffe0b2,stroke:#e80
+    style r503 fill:#ffe0b2,stroke:#e80
+    style r500 fill:#ffe4e1,stroke:#c66
     style ok fill:#e6f4ea,stroke:#4a7
 ```
 
-A validação do CPF acontece **antes** de qualquer ida ao banco: CPF malformado nunca vira consulta.
+O CPF é validado **antes** da chamada de rede: CPF malformado nunca chega ao os-service. Só erros de rede e 5xx são repetidos, porque a consulta é idempotente. Um 401 indica configuração errada (token interno divergente), e repetir não resolveria.
 
-### Grafo de decisão — authorizer
+### Grafo de decisão do authorizer
 
 ```mermaid
 flowchart TD
-    e(["Requisição em rota protegida"]) --> h{"header Authorization<br/>no formato Bearer?"}
+    e(["Requisição em rota protegida"]) --> h{"Authorization<br/>no formato Bearer?"}
     h -->|não| d1(["isAuthorized: false"])
     h -->|sim| alg{"algoritmo é HS256?"}
     alg -->|"none ou outro"| d2(["isAuthorized: false"])
-    alg -->|sim| sig{"assinatura confere<br/>com JWT_SECRET?"}
+    alg -->|sim| sig{"assinatura confere?"}
     sig -->|não| d3(["isAuthorized: false"])
     sig -->|sim| exp{"expirado?"}
     exp -->|sim| d4(["isAuthorized: false"])
@@ -89,129 +105,119 @@ flowchart TD
     style allow fill:#e6f4ea,stroke:#4a7
 ```
 
-A rejeição do algoritmo `none` é explícita, via `jwt.WithValidMethods`. Sem isso, um token sem assinatura nenhuma seria aceito — é a vulnerabilidade clássica de biblioteca JWT.
-
-O exigir `sub` **e** `role` não é arbitrário: é o mesmo contrato do middleware `Auth` da aplicação. Um token que passasse aqui e fosse recusado lá seria pior que uma recusa direta, porque falharia mais tarde e com menos contexto.
+O authorizer aceita o token do cliente (emitido aqui) e também o da equipe (emitido pelo `POST /api/v1/auth/login` do os-service), porque os dois usam o mesmo `JWT_SECRET`. O algoritmo `none` é recusado explicitamente com `jwt.WithValidMethods`. Os serviços validam o JWT de novo (defesa em profundidade), e o os-service ainda confere se o `document` do token é o dono da OS consultada.
 
 ## Estrutura
 
 ```
-cmd/issuer/main.go        emissor: valida o CPF, consulta o cliente e devolve o JWT
-cmd/authorizer/main.go    authorizer REQUEST do API Gateway: valida o JWT
-internal/cpf/             validação de CPF (dígitos verificadores)
-internal/requester/       consulta em `requesters` e checagem de status
-internal/token/           emissão e verificação do JWT
-infra/                    Terraform das functions (lookup da LabRole, VPC, security group, log groups, código)
+cmd/issuer/            main do issuer: configuração, cliente HTTP com New Relic e start
+cmd/authorizer/        main do authorizer
+internal/issuer/       handler do POST /auth (validação, respostas, atributos de telemetria)
+internal/authorizer/   handler do authorizer (payload 2.0, resposta simples)
+internal/requester/    cliente HTTP do os-service (timeout, retry, correlation id)
+internal/token/        emissão e verificação do JWT
+internal/cpf/          dígitos verificadores
+internal/mask/         mascaramento de CPF/e-mail nos logs (LGPD)
+internal/telemetry/    trace.id/span.id nos logs e atributos na transação do New Relic
+internal/runtime/      logger, env obrigatória e start com ou sem New Relic
+test/integration/      CPF → issuer → os-service real → JWT aceito pelo authorizer e pelo os-service
+infra/                 Terraform das functions
 ```
 
 ## Contrato do token
 
-O JWT é validado pelo middleware `Auth` do [`postech-tc3-app`](https://github.com/Kc1t/postech-tc3-app), que exige `sub` e `role` não vazios. As claims emitidas são:
-
 | Claim | Valor |
 |---|---|
-| `sub` | id do solicitante em `requesters` |
-| `role` | `client` — vocabulário do app (`admin` \| `client`) |
-| `email`, `name`, `document` | dados do solicitante |
-| `iat`, `exp` | emissão e expiração (`JWT_TTL`) |
+| `sub` | id do cliente no os-service |
+| `role` | `client` (a equipe usa `admin`) |
+| `email`, `name`, `document` | dados do cliente |
+| `iat`, `exp` | emissão e expiração (`JWT_TTL`, padrão 15 min) |
 
-Assinatura HS256 com o **mesmo** `JWT_SECRET` da aplicação. Se os segredos divergirem, o app rejeita o token com 401.
+## Respostas do issuer
 
-## Respostas
-
-| Situação | HTTP | Corpo |
+| Situação | HTTP | `error.code` |
 |---|---|---|
-| CPF válido e cliente ativo | 200 | `access_token`, `token_type`, `expires_at` |
-| Payload malformado | 400 | `payload invalido` |
-| CPF inválido | 400 | `cpf invalido` |
-| Cliente inexistente | 404 | `cliente nao encontrado` |
-| Cliente inativo | 403 | `cliente inativo` |
-| Falha interna | 500 | `erro interno` |
+| CPF válido e cliente ativo | 200 | `access_token`, `token_type`, `expires_at`, `expires_in` |
+| Payload malformado ou CPF inválido | 400 | `VALIDATION_ERROR` |
+| Cliente inexistente | 404 | `NOT_FOUND` |
+| Cliente inativo | 403 | `FORBIDDEN` |
+| os-service fora do ar ou 5xx depois das tentativas | 503 | `UPSTREAM_UNAVAILABLE` |
+| Token interno errado ou falha ao assinar | 500 | `INTERNAL_ERROR` |
 
-O emissor propaga o `x-correlation-id` do request para os logs; na ausência dele, usa o request id do API Gateway. O authorizer registra o request id.
+As respostas levam `X-Correlation-ID`: o do cliente, se veio no request, ou o request id do API Gateway. O mesmo id segue para o os-service e aparece nos logs dos dois lados. A resposta com token vem com `Cache-Control: no-store`.
+
+## Observabilidade
+
+- **Traces**: `nrlambda` abre uma transação por invocação, e a chamada ao os-service continua o trace distribuído.
+- **Logs em contexto**: cada log tem `trace.id`, `span.id` e `entity.guid`. A extension envia os logs ao New Relic (`NEW_RELIC_EXTENSION_SEND_FUNCTION_LOGS`).
+- **Atributos para dashboards e alertas**: `auth.outcome` (`issued`, `not_found`, `inactive`, `invalid_cpf`, `upstream_unavailable`, `allowed`, `invalid_token`...), `auth.role`, `requester_id` e `correlation_id`. Exemplo de NRQL:
+
+```sql
+SELECT count(*) FROM Transaction WHERE appName LIKE '%-auth-issuer' FACET auth.outcome TIMESERIES
+```
+
+Sem a licença do New Relic, o Terraform não instala a layer e as functions sobem com `lambda.Start` puro.
 
 ## Execução local
 
 ```bash
-cp .env.example .env
-make tidy
-make test
+make test         # unitários com race
+make cover        # cobertura de internal/ (91%)
+make lint         # golangci-lint (gosec, errorlint, bodyclose, noctx...)
+make package      # issuer.zip e authorizer.zip (bootstrap arm64)
 ```
 
-Empacotar o artefato de deploy:
+Teste de integração com o os-service de verdade. Suba o `docker compose` do [postech-tc4-os-service](https://github.com/Kc1t/postech-tc4-os-service) e rode o `scripts/smoke-saga.sh` uma vez para cadastrar o cliente de teste:
 
 ```bash
-make package    # gera issuer.zip e authorizer.zip (bootstrap arm64)
+make integration  # usa OS_SERVICE_URL=http://localhost:8080 e INTERNAL_API_TOKEN=local-internal-token
 ```
 
-> **Dockerfile:** não se aplica. As functions rodam no runtime `provided.al2023` e sobem como zip, não como imagem de container.
+O teste cobre: token emitido, aceito pelo authorizer e pela rota do cliente no os-service; 403 ao consultar o CPF de outra pessoa; 404 para CPF sem cadastro; e 500 com token interno errado.
+
+> **Dockerfile**: não se aplica. As functions sobem como zip no runtime `provided.al2023`.
 
 ## Variáveis de ambiente
 
-| Variável | Descrição |
+| Variável | Function | Descrição |
+|---|---|---|
+| `OS_SERVICE_URL` | issuer | URL do os-service (no Terraform, vazio = procura o NLB `os-service-public` pela tag do Kubernetes) |
+| `INTERNAL_API_TOKEN` | issuer | mesmo valor do os-service |
+| `JWT_SECRET` | as duas | segredo HS256, o mesmo dos serviços |
+| `JWT_TTL` | issuer | validade do token (padrão `15m`) |
+| `UPSTREAM_TIMEOUT` | issuer | timeout da chamada ao os-service (padrão `3s`) |
+| `NEW_RELIC_*` | as duas | definidas pelo Terraform quando há licença |
+
+`OS_SERVICE_URL`, `INTERNAL_API_TOKEN` e `JWT_SECRET` são obrigatórias: sem elas a function falha já no cold start, em vez de emitir token com segredo vazio.
+
+## CI/CD
+
+| Job | O que faz |
 |---|---|
-| `DATABASE_URL` | string de conexão do RDS (GitHub Secret `POSTGRES_DSN`, repassado pelo Terraform) |
-| `JWT_SECRET` | segredo de assinatura HS256 |
-| `JWT_TTL` | validade do token (padrão `15m`) |
+| Lint, SAST e testes | `go mod tidy` limpo, `gofmt`, `go vet`, golangci-lint, gosec, testes com race, **cobertura mínima de 80%** e govulncheck |
+| SonarQube | sobe o SonarQube Community num container do próprio job (o repo é privado), cria um quality gate (cobertura ≥ 80%, duplicação ≤ 3%, nota A em confiabilidade, segurança e manutenibilidade), importa a cobertura e os relatórios do golangci-lint/gosec, e falha se o gate reprovar ([`.github/scripts/sonar.sh`](.github/scripts/sonar.sh)) |
+| Terraform | `fmt -check` e `validate` |
+| Deploy (push) | `make package`, `terraform apply` (homolog → staging, main → prod), smoke test com `aws lambda invoke` e os invoke ARNs no resumo do job |
 
-## Deploy
+O deploy só roda com a variável de repositório `AWS_DEPLOY_ENABLED=true`, porque as credenciais do Learner Lab expiram a cada sessão.
 
-| Evento | Ação |
-|---|---|
-| Pull Request | tidy, `gofmt`, `go vet`, testes com race e cobertura, `terraform validate` |
-| Push em `homolog` | os mesmos testes + `make package` + `terraform apply` com `envs/staging.tfvars`: functions `postech-tc3-staging-auth-*`, state `lambda-auth/staging.tfstate`, sem tocar em produção |
-| Push em `main` | os mesmos testes + `make package` + `terraform apply` em produção |
-
-O Terraform é dono do código das functions: o `source_code_hash` de `issuer.zip` e `authorizer.zip` dispara a atualização no `apply`, sem passo separado de `update-function-code`.
-
-Staging é barato porque a Lambda cobra por invocação; o cluster e o banco, que cobram por hora, ficam compartilhados ([ADR-0010](https://github.com/Kc1t/postech-tc3-app/blob/main/docs/adr/0010-cluster-unico-dois-namespaces.md)). As functions de staging não têm rota no gateway, que é único e aponta para as de produção — são testadas por invocação direta (`aws lambda invoke`).
-
-Secrets necessários: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_REGION`, `TF_STATE_BUCKET`, `POSTGRES_DSN`, `JWT_SECRET`.
-
-## Fluxo de deploy
-
-```mermaid
-flowchart LR
-    pr(["Pull Request"]) --> t["tidy · gofmt · vet<br/>go test -race"]
-    t --> v["terraform fmt -check<br/>validate"]
-
-    push(["Push"]) --> t2["mesmos testes"]
-    t2 --> pk["make package<br/>issuer.zip + authorizer.zip<br/>arm64"]
-    pk --> ap["terraform apply<br/>source_code_hash detecta<br/>a mudança de código"]
-    ap --> sum["resumo do job imprime<br/>os 4 valores para o infra-k8s"]
-
-    style ap fill:#e8f0fe,stroke:#4a7
-```
-
-Não existe `update-function-code`: o Terraform é dono do código, e o `source_code_hash` do zip é o que dispara a atualização. Justificativa no [ADR-0009](https://github.com/Kc1t/postech-tc3-app/blob/main/docs/adr/0009-lambda-terraform-em-vez-de-sam.md).
+Secrets do ambiente: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `TF_STATE_BUCKET`, `INTERNAL_API_TOKEN`, `JWT_SECRET` e `NEW_RELIC_LICENSE_KEY`. Variáveis: `AWS_REGION`, `OS_SERVICE_URL` (opcional) e `NEW_RELIC_ACCOUNT_ID`.
 
 ## Infraestrutura
 
-A function roda **dentro da VPC** para alcançar o RDS, que não é publicamente acessível. Como só precisa falar com o banco, não há NAT Gateway: o `DATABASE_URL` chega por variável de ambiente em vez de leitura do Secrets Manager em runtime, o que evita saída para a internet e os $32,85/mês do NAT.
-
-A execution role é a `LabRole` existente (`var.lab_role_name`), e não uma role criada pelo Terraform — o AWS Academy Learner Lab não permite criar roles IAM.
-
-Após o primeiro apply, leve o output `invoke_arn` para a variável `lambda_authorizer_invoke_arn` do [`postech-tc3-infra-k8s`](https://github.com/Kc1t/postech-tc3-infra-k8s) para ligar o authorizer no API Gateway.
+- A execution role é a `LabRole`, porque o Learner Lab não permite criar IAM.
+- O Terraform é dono do código: o `source_code_hash` dos zips dispara a atualização no `apply`.
+- A URL do os-service sai do NLB que o Kubernetes cria para o Service `os-service-public` (tag `kubernetes.io/service-name = <namespace>/os-service-public`). Por isso a ordem de deploy é: cluster → os-service → lambda-auth → rotas do gateway (no [postech-tc4-infra-k8s](https://github.com/Kc1t/postech-tc4-infra-k8s)).
+- A rota `/internal/*` do os-service não existe no API Gateway. Ela só é acessível pelo NLB, e mesmo assim exige `X-Internal-Token` (comparação em tempo constante). Num ambiente sem as restrições do Learner Lab, o próximo passo seria um NLB interno com VPC Link e a Lambda na VPC com NAT.
 
 ## Testes
 
 | Pacote | Cobertura | O que cobre |
 |---|---|---|
-| `internal/requester` | 100% | ativo, inexistente, inativo e erro de banco, com `go-sqlmock` |
-| `internal/cpf` | 94% | dígitos verificadores, formatação, sequências repetidas, tamanho inválido |
-| `internal/token` | 82% | emissão, verificação, segredo errado, token expirado e algoritmo `none` |
-
-`cmd/issuer` e `cmd/authorizer` ficam sem teste de propósito: são finos, apenas orquestram os pacotes acima e traduzem para o formato de evento da Lambda.
-
-## Deploy ativo
-
-| O quê | Onde |
-|---|---|
-| Emissão de token | `POST https://tkh5cum8g8.execute-api.us-east-1.amazonaws.com/auth` com `{"cpf": "..."}` |
-| Functions (us-east-1) | `postech-tc3-prod-auth-issuer` e `postech-tc3-prod-auth-authorizer` |
-| Functions de homologação | `postech-tc3-staging-auth-issuer` e `postech-tc3-staging-auth-authorizer`, criadas pelo push em `homolog` |
-| Logs | CloudWatch: `/aws/lambda/postech-tc3-prod-auth-issuer` e `/aws/lambda/postech-tc3-prod-auth-authorizer` |
-| APIs protegidas (Swagger) | https://tkh5cum8g8.execute-api.us-east-1.amazonaws.com/swagger/index.html |
-| Collection Postman | [`postman_collection.json`](https://github.com/Kc1t/postech-tc3-app/blob/main/postman_collection.json) no repositório da aplicação |
-
-As functions de produção foram criadas na primeira validação no Learner Lab e importadas para o state do Terraform (`terraform import`, chave `lambda-auth/prod.tfstate`). Desde então quem as altera é o pipeline, no push da `main`; as de staging nascem e são atualizadas no push da `homolog`.
+| `internal/requester` | 97,8% | 200, 404, inativo, 5xx com retry, recuperação na 2ª tentativa, rede fora, contexto cancelado, 401 sem retry, JSON inválido |
+| `internal/issuer` | 95,2% | token emitido e verificável, body em base64, todos os erros e o correlation id |
+| `internal/authorizer` | 96,0% | token válido, header em outra caixa, ausente, sem esquema, vazio, expirado, outro segredo |
+| `internal/cpf` | 94,1% | dígitos verificadores, formatação, sequências repetidas |
+| `internal/token` | 81,8% | emissão, verificação, segredo errado, expirado, algoritmo `none` |
+| `internal/telemetry`, `mask`, `runtime` | 90–100% | logs com e sem transação, mascaramento |
+| **Total (`internal/`)** | **91,3%** | |

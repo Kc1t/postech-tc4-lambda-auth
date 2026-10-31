@@ -5,20 +5,34 @@ variable "aws_region" {
 
 variable "project_name" {
   type    = string
-  default = "postech-tc3"
+  default = "postech-tc4"
 }
 
 variable "environment" {
   type = string
 }
 
-variable "vpc_id" {
-  type = string
+variable "os_service_url" {
+  type        = string
+  default     = ""
+  description = "URL base do os-service; vazio = procura o NLB do Service os-service-public no namespace"
+
+  validation {
+    condition     = var.os_service_url == "" || can(regex("^https?://", var.os_service_url))
+    error_message = "os_service_url precisa começar com http:// ou https://."
+  }
 }
 
-variable "database_url" {
-  type      = string
-  sensitive = true
+variable "k8s_namespace" {
+  type        = string
+  default     = "postech"
+  description = "Namespace do os-service no EKS (postech em prod, postech-homolog em staging)"
+}
+
+variable "internal_api_token" {
+  type        = string
+  sensitive   = true
+  description = "Mesmo valor de INTERNAL_API_TOKEN no os-service"
 }
 
 variable "jwt_secret" {
@@ -29,6 +43,11 @@ variable "jwt_secret" {
 variable "jwt_ttl" {
   type    = string
   default = "15m"
+}
+
+variable "upstream_timeout" {
+  type    = string
+  default = "3s"
 }
 
 variable "issuer_artifact_path" {
@@ -47,12 +66,24 @@ variable "log_retention_days" {
 }
 
 variable "lab_role_name" {
-  type    = string
-  default = "LabRole"
+  type        = string
+  default     = "LabRole"
+  description = "No Learner Lab não dá para criar IAM: as functions usam a LabRole"
 }
 
-variable "subnet_az_ids" {
-  type        = list(string)
-  default     = ["use1-az1", "use1-az2", "use1-az4", "use1-az5", "use1-az6"]
-  description = "AZs das subnets da function; use1-az3 fica de fora, como no cluster"
+variable "new_relic_account_id" {
+  type    = string
+  default = ""
+}
+
+variable "new_relic_license_key" {
+  type      = string
+  sensitive = true
+  default   = ""
+}
+
+variable "new_relic_layer_arn" {
+  type        = string
+  default     = "arn:aws:lambda:us-east-1:451483290750:layer:NewRelicLambdaExtensionARM64:62"
+  description = "Extension do New Relic para arm64 (provided.al2023)"
 }

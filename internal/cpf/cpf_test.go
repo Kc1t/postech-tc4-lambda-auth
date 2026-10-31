@@ -3,7 +3,7 @@ package cpf_test
 import (
 	"testing"
 
-	"github.com/Kc1t/postech-tc3-lambda-auth/internal/cpf"
+	"github.com/Kc1t/postech-tc4-lambda-auth/internal/cpf"
 )
 
 func TestValidate(t *testing.T) {

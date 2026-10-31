@@ -6,7 +6,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 
-	"github.com/Kc1t/postech-tc3-lambda-auth/internal/token"
+	"github.com/Kc1t/postech-tc4-lambda-auth/internal/token"
 )
 
 const secret = "segredo-de-teste"

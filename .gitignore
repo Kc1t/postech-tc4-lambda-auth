@@ -8,3 +8,7 @@ bin/
 *.tfvars
 !infra/envs/*.tfvars
 crash.log
+coverage.out
+golangci-report.xml
+gosec-report.json
+.scannerwork/

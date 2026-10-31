@@ -4,36 +4,38 @@ locals {
   tags = {
     Project     = var.project_name
     Environment = var.environment
+    Service     = "auth"
     ManagedBy   = "terraform"
   }
+
+  new_relic_enabled = var.new_relic_license_key != ""
+
+  # Sem URL explícita, usa o NLB que o Kubernetes criou para o Service os-service-public.
+  os_service_url = var.os_service_url != "" ? var.os_service_url : "http://${data.aws_lb.os_service[0].dns_name}"
+
+  new_relic_env = local.new_relic_enabled ? {
+    NEW_RELIC_ACCOUNT_ID                   = var.new_relic_account_id
+    NEW_RELIC_TRUSTED_ACCOUNT_KEY          = var.new_relic_account_id
+    NEW_RELIC_LICENSE_KEY                  = var.new_relic_license_key
+    NEW_RELIC_LAMBDA_EXTENSION_ENABLED     = "true"
+    NEW_RELIC_EXTENSION_SEND_FUNCTION_LOGS = "true"
+    NEW_RELIC_APM_LAMBDA_MODE              = "true"
+    NR_TAGS                                = "NR.Apm.Lambda.Mode:true;Service:auth;Environment:${var.environment}"
+  } : {}
 }
 
-data "aws_subnets" "default" {
-  filter {
-    name   = "vpc-id"
-    values = [var.vpc_id]
-  }
+# O controlador de nuvem do Kubernetes marca o NLB com o namespace/nome do Service.
+data "aws_lb" "os_service" {
+  count = var.os_service_url == "" ? 1 : 0
 
-  filter {
-    name   = "availability-zone-id"
-    values = var.subnet_az_ids
+  tags = {
+    "kubernetes.io/service-name" = "${var.k8s_namespace}/os-service-public"
   }
 }
 
-resource "aws_security_group" "lambda" {
-  name        = "${local.name}-sg"
-  description = "Egress da lambda de autenticacao para o RDS"
-  vpc_id      = var.vpc_id
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  tags = local.tags
-}
+# Sem vpc_config: desde a Fase 4 a Lambda não abre mais o banco (consulta o os-service pela
+# rota interna). Fora da VPC ela tem saída para a internet sem NAT, que a extension do
+# New Relic precisa, e o cold start não espera a ENI (ADR-0014).
 
 resource "aws_cloudwatch_log_group" "issuer" {
   name              = "/aws/lambda/${local.name}-issuer"
@@ -51,6 +53,7 @@ resource "aws_cloudwatch_log_group" "authorizer" {
 
 resource "aws_lambda_function" "issuer" {
   function_name = "${local.name}-issuer"
+  description   = "Troca o CPF do cliente por um JWT (POST /auth/token)"
   role          = data.aws_iam_role.lab.arn
 
   filename         = var.issuer_artifact_path
@@ -59,20 +62,19 @@ resource "aws_lambda_function" "issuer" {
   runtime       = "provided.al2023"
   handler       = "bootstrap"
   architectures = ["arm64"]
-  timeout       = 15
+  timeout       = 10
   memory_size   = 256
-
-  vpc_config {
-    subnet_ids         = data.aws_subnets.default.ids
-    security_group_ids = [aws_security_group.lambda.id]
-  }
+  layers        = local.new_relic_enabled ? [var.new_relic_layer_arn] : []
 
   environment {
-    variables = {
-      DATABASE_URL = var.database_url
-      JWT_SECRET   = var.jwt_secret
-      JWT_TTL      = var.jwt_ttl
-    }
+    variables = merge({
+      OS_SERVICE_URL     = local.os_service_url
+      INTERNAL_API_TOKEN = var.internal_api_token
+      JWT_SECRET         = var.jwt_secret
+      JWT_TTL            = var.jwt_ttl
+      UPSTREAM_TIMEOUT   = var.upstream_timeout
+      LOG_LEVEL          = "info"
+    }, local.new_relic_env)
   }
 
   depends_on = [aws_cloudwatch_log_group.issuer]
@@ -82,6 +84,7 @@ resource "aws_lambda_function" "issuer" {
 
 resource "aws_lambda_function" "authorizer" {
   function_name = "${local.name}-authorizer"
+  description   = "Lambda authorizer do API Gateway (valida o JWT)"
   role          = data.aws_iam_role.lab.arn
 
   filename         = var.authorizer_artifact_path
@@ -92,11 +95,13 @@ resource "aws_lambda_function" "authorizer" {
   architectures = ["arm64"]
   timeout       = 5
   memory_size   = 128
+  layers        = local.new_relic_enabled ? [var.new_relic_layer_arn] : []
 
   environment {
-    variables = {
+    variables = merge({
       JWT_SECRET = var.jwt_secret
-    }
+      LOG_LEVEL  = "info"
+    }, local.new_relic_env)
   }
 
   depends_on = [aws_cloudwatch_log_group.authorizer]
