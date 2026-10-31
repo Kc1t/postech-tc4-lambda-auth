@@ -197,7 +197,7 @@ O teste cobre: token emitido, aceito pelo authorizer e pela rota do cliente no o
 | Lint, SAST e testes | `go mod tidy` limpo, `gofmt`, `go vet`, golangci-lint, gosec, testes com race, **cobertura mínima de 80%** e govulncheck |
 | SonarQube | sobe o SonarQube Community num container do próprio job (o repo é privado), cria um quality gate (cobertura ≥ 80%, duplicação ≤ 3%, nota A em confiabilidade, segurança e manutenibilidade), importa a cobertura e os relatórios do golangci-lint/gosec, e falha se o gate reprovar ([`.github/scripts/sonar.sh`](.github/scripts/sonar.sh)) |
 | Terraform | `fmt -check` e `validate` |
-| Deploy (push) | `make package`, `terraform apply` (homolog → staging, main → prod), smoke test com `aws lambda invoke` e os invoke ARNs no resumo do job |
+| Deploy (push) | `make package`, `terraform apply` só na `main` (ambiente único, ADR-0021), smoke test com `aws lambda invoke` e os invoke ARNs no resumo do job |
 
 O deploy só roda com a variável de repositório `AWS_DEPLOY_ENABLED=true`, porque as credenciais do Learner Lab expiram a cada sessão.
 

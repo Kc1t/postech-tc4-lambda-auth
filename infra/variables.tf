@@ -26,7 +26,7 @@ variable "os_service_url" {
 variable "k8s_namespace" {
   type        = string
   default     = "postech"
-  description = "Namespace do os-service no EKS (postech em prod, postech-homolog em staging)"
+  description = "Namespace do os-service no EKS"
 }
 
 variable "internal_api_token" {

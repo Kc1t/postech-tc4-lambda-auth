@@ -111,17 +111,17 @@ jobs:
       - run: terraform init -backend=false -input=false
       - run: terraform validate
 
-  # homolog → envs/staging.tfvars (functions postech-tc4-staging-auth-*), main → produção.
-  # Só roda com a variável AWS_DEPLOY_ENABLED=true: as credenciais do Learner Lab expiram a cada
-  # sessão, e sem elas o push não deve falhar.
+  # Só a main faz deploy: existe um ambiente só na AWS (ADR-0021), e o issuer depende do NLB do
+  # os-service desse ambiente. Só roda com a variável AWS_DEPLOY_ENABLED=true: as credenciais do
+  # Learner Lab expiram a cada sessão, e sem elas o push não deve falhar.
   deploy:
     name: Deploy
     needs: [quality, sonarqube, terraform]
-    if: github.event_name != 'pull_request' && vars.AWS_DEPLOY_ENABLED == 'true'
+    if: github.event_name != 'pull_request' && github.ref_name == 'main' && vars.AWS_DEPLOY_ENABLED == 'true'
     runs-on: ubuntu-latest
-    environment: ${{ github.ref_name == 'main' && 'prod' || 'staging' }}
+    environment: prod
     env:
-      TF_ENV: ${{ github.ref_name == 'main' && 'prod' || 'staging' }}
+      TF_ENV: prod
     steps:
       - uses: actions/checkout@v4
 
