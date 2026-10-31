@@ -70,8 +70,11 @@ func (h *Handler) Handle(ctx context.Context, event events.APIGatewayV2HTTPReque
 	logger := telemetry.Logger(ctx, h.logger).With("correlation_id", corr)
 	telemetry.Attr(ctx, "correlation_id", corr)
 
+	// O nrlambda só lê o status de APIGatewayProxyResponse (v1), não da resposta v2 do HTTP API;
+	// gravar http.statusCode aqui deixa o issuer nas mesmas consultas de 4xx/5xx dos serviços.
 	reply := func(status int, payload any, outcome string) (events.APIGatewayV2HTTPResponse, error) {
 		telemetry.Attr(ctx, "auth.outcome", outcome)
+		telemetry.Attr(ctx, "http.statusCode", status)
 		return JSON(status, payload, corr)
 	}
 

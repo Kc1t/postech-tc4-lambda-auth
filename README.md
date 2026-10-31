@@ -150,7 +150,7 @@ As respostas levam `X-Correlation-ID`: o do cliente, se veio no request, ou o re
 
 - **Traces**: `nrlambda` abre uma transação por invocação, e a chamada ao os-service continua o trace distribuído.
 - **Logs em contexto**: cada log tem `trace.id`, `span.id` e `entity.guid`. A extension envia os logs ao New Relic (`NEW_RELIC_EXTENSION_SEND_FUNCTION_LOGS`).
-- **Atributos para dashboards e alertas**: `auth.outcome` (`issued`, `not_found`, `inactive`, `invalid_cpf`, `upstream_unavailable`, `allowed`, `invalid_token`...), `auth.role`, `requester_id` e `correlation_id`. Exemplo de NRQL:
+- **Atributos para dashboards e alertas**: `auth.outcome` (`issued`, `not_found`, `inactive`, `invalid_cpf`, `upstream_unavailable`, `allowed`, `invalid_token`...), `auth.role`, `requester_id`, `correlation_id` e, no issuer, `http.statusCode` (o nrlambda só lê o status da resposta v1 do API Gateway, então o handler grava o da v2). Exemplo de NRQL:
 
 ```sql
 SELECT count(*) FROM Transaction WHERE appName LIKE '%-auth-issuer' FACET auth.outcome TIMESERIES
@@ -217,7 +217,7 @@ Secrets do ambiente: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_
 | Pacote | Cobertura | O que cobre |
 |---|---|---|
 | `internal/requester` | 97,8% | 200, 404, inativo, 5xx com retry, recuperação na 2ª tentativa, rede fora, contexto cancelado, 401 sem retry, JSON inválido |
-| `internal/issuer` | 95,2% | token emitido e verificável, body em base64, todos os erros e o correlation id |
+| `internal/issuer` | 95,3% | token emitido e verificável, body em base64, todos os erros e o correlation id |
 | `internal/authorizer` | 96,0% | token válido, header em outra caixa, ausente, sem esquema, vazio, expirado, outro segredo |
 | `internal/cpf` | 94,1% | dígitos verificadores, formatação, sequências repetidas |
 | `internal/token` | 81,8% | emissão, verificação, segredo errado, expirado, algoritmo `none` |
@@ -225,4 +225,4 @@ Secrets do ambiente: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_
 | `internal/runtime` | 65,2% | logger (texto em `message`) e variáveis de ambiente; o `Start` com New Relic e o `os.Exit` do `Require` só rodam dentro da Lambda |
 | **Total (`internal/`)** | **91,4%** | |
 
-No SonarQube a cobertura fica em 90,5%, com o quality gate aprovado (0 bugs, 0 vulnerabilidades, 0 code smells, 0% de duplicação).
+No SonarQube a cobertura fica em 90,6%, com o quality gate aprovado (0 bugs, 0 vulnerabilidades, 0 code smells, 0% de duplicação).
