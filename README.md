@@ -192,11 +192,13 @@ O teste cobre: token emitido, aceito pelo authorizer e pela rota do cliente no o
 
 ## CI/CD
 
+Pipeline próprio em [`.github/workflows/ci.yml`](.github/workflows/ci.yml). A `main` é protegida: só recebe PR, com os três primeiros jobs obrigatórios.
+
 | Job | O que faz |
 |---|---|
 | Lint, SAST e testes | `go mod tidy` limpo, `gofmt`, `go vet`, golangci-lint, gosec, testes com race, **cobertura mínima de 80%** e govulncheck |
 | SonarQube | sobe o SonarQube Community num container do próprio job (o repo é privado), cria um quality gate (cobertura ≥ 80%, duplicação ≤ 3%, nota A em confiabilidade, segurança e manutenibilidade), importa a cobertura e os relatórios do golangci-lint/gosec, e falha se o gate reprovar ([`.github/scripts/sonar.sh`](.github/scripts/sonar.sh)) |
-| Terraform | `fmt -check` e `validate` |
+| Terraform | `fmt -check`, `validate` e tfsec (as exceções têm a justificativa no próprio `main.tf`: Learner Lab sem CMK, trace pelo New Relic em vez do X-Ray) |
 | Deploy (push) | `make package`, `terraform apply` só na `main` (ambiente único, ADR-0021), smoke test com `aws lambda invoke` e os invoke ARNs no resumo do job |
 
 O deploy só roda com a variável de repositório `AWS_DEPLOY_ENABLED=true`, porque as credenciais do Learner Lab expiram a cada sessão.
@@ -219,5 +221,6 @@ Secrets do ambiente: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_
 | `internal/authorizer` | 96,0% | token válido, header em outra caixa, ausente, sem esquema, vazio, expirado, outro segredo |
 | `internal/cpf` | 94,1% | dígitos verificadores, formatação, sequências repetidas |
 | `internal/token` | 81,8% | emissão, verificação, segredo errado, expirado, algoritmo `none` |
-| `internal/telemetry`, `mask`, `runtime` | 90–100% | logs com e sem transação, mascaramento |
+| `internal/telemetry`, `mask` | 90,9% e 100% | logs com e sem transação, mascaramento |
+| `internal/runtime` | 60,0% | logger e variáveis de ambiente; o `Start` com New Relic e o `os.Exit` do `Require` só rodam dentro da Lambda |
 | **Total (`internal/`)** | **91,3%** | |

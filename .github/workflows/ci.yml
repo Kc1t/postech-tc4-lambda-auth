@@ -95,7 +95,7 @@ jobs:
         run: .github/scripts/sonar.sh
 
   terraform:
-    name: Terraform (fmt e validate)
+    name: Terraform (fmt, validate, tfsec)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -110,6 +110,10 @@ jobs:
       - run: terraform fmt -check -recursive
       - run: terraform init -backend=false -input=false
       - run: terraform validate
+
+      - uses: aquasecurity/tfsec-action@v1.0.3
+        with:
+          working_directory: infra
 
   # Só a main faz deploy: existe um ambiente só na AWS (ADR-0021), e o issuer depende do NLB do
   # os-service desse ambiente. Só roda com a variável AWS_DEPLOY_ENABLED=true: as credenciais do

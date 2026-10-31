@@ -1,4 +1,4 @@
-// Lambda emissora: POST /auth/token troca o CPF do cliente por um JWT.
+// Lambda emissora: POST /auth troca o CPF do cliente por um JWT.
 package main
 
 import (

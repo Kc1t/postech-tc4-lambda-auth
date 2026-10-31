@@ -1,4 +1,4 @@
-// Package issuer é a Lambda que troca um CPF por um JWT do cliente (POST /auth/token).
+// Package issuer é a Lambda que troca um CPF por um JWT do cliente (POST /auth).
 package issuer
 
 import (

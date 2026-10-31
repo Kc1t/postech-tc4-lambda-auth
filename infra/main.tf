@@ -37,6 +37,7 @@ data "aws_lb" "os_service" {
 # rota interna). Fora da VPC ela tem saída para a internet sem NAT, que a extension do
 # New Relic precisa, e o cold start não espera a ENI (ADR-0014).
 
+# tfsec:ignore:aws-cloudwatch-log-group-customer-key O Learner Lab não permite criar CMK; o log fica com a chave gerenciada da AWS.
 resource "aws_cloudwatch_log_group" "issuer" {
   name              = "/aws/lambda/${local.name}-issuer"
   retention_in_days = var.log_retention_days
@@ -44,6 +45,7 @@ resource "aws_cloudwatch_log_group" "issuer" {
   tags = local.tags
 }
 
+# tfsec:ignore:aws-cloudwatch-log-group-customer-key O Learner Lab não permite criar CMK; o log fica com a chave gerenciada da AWS.
 resource "aws_cloudwatch_log_group" "authorizer" {
   name              = "/aws/lambda/${local.name}-authorizer"
   retention_in_days = var.log_retention_days
@@ -51,9 +53,10 @@ resource "aws_cloudwatch_log_group" "authorizer" {
   tags = local.tags
 }
 
+# tfsec:ignore:aws-lambda-enable-tracing O trace distribuído é do New Relic (nrlambda + extension); o X-Ray duplicaria o custo sem ligar os spans aos serviços.
 resource "aws_lambda_function" "issuer" {
   function_name = "${local.name}-issuer"
-  description   = "Troca o CPF do cliente por um JWT (POST /auth/token)"
+  description   = "Troca o CPF do cliente por um JWT (POST /auth)"
   role          = data.aws_iam_role.lab.arn
 
   filename         = var.issuer_artifact_path
@@ -82,6 +85,7 @@ resource "aws_lambda_function" "issuer" {
   tags = local.tags
 }
 
+# tfsec:ignore:aws-lambda-enable-tracing O trace distribuído é do New Relic (nrlambda + extension); o X-Ray duplicaria o custo sem ligar os spans aos serviços.
 resource "aws_lambda_function" "authorizer" {
   function_name = "${local.name}-authorizer"
   description   = "Lambda authorizer do API Gateway (valida o JWT)"
