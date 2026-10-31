@@ -49,7 +49,7 @@ jobs:
 
       - name: gosec (relatório para o SonarQube)
         run: |
-          go install github.com/securego/gosec/v2/cmd/gosec@${GOSEC_VERSION}
+          go install github.com/securego/gosec/v2/cmd/gosec@"${GOSEC_VERSION}"
           gosec -quiet -exclude-dir=test -fmt=sonarqube -out=gosec-report.json -no-fail ./...
           gosec -quiet -exclude-dir=test -severity=medium -confidence=medium ./...
 
@@ -160,7 +160,7 @@ jobs:
           TF_VAR_jwt_secret: ${{ secrets.JWT_SECRET }}
           TF_VAR_new_relic_account_id: ${{ vars.NEW_RELIC_ACCOUNT_ID }}
           TF_VAR_new_relic_license_key: ${{ secrets.NEW_RELIC_LICENSE_KEY }}
-        run: terraform apply -input=false -auto-approve -var-file=envs/${TF_ENV}.tfvars
+        run: terraform apply -input=false -auto-approve -var-file="envs/${TF_ENV}.tfvars"
 
       - name: Smoke test do issuer
         working-directory: infra
