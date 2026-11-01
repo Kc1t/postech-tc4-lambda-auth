@@ -129,6 +129,20 @@ func TestVerify_RejectsExpired(t *testing.T) {
 	}
 }
 
+func TestVerify_RejectsMissingExp(t *testing.T) {
+	semExp, err := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"sub":  "req-1",
+		"role": "client",
+	}).SignedString([]byte(secret))
+	if err != nil {
+		t.Fatalf("falha ao montar token sem exp: %v", err)
+	}
+
+	if _, err := token.NewIssuer(secret, time.Minute).Verify(semExp); err == nil {
+		t.Error("esperava rejeicao de token sem exp")
+	}
+}
+
 func TestVerify_RejectsNoneAlgorithm(t *testing.T) {
 	unsigned, err := jwt.NewWithClaims(jwt.SigningMethodNone, jwt.MapClaims{
 		"sub":  "req-1",
