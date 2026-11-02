@@ -20,7 +20,7 @@ Tech Challenge Fase 4, FIAP Pós Tech SOAT. Go 1.26 em AWS Lambda (`provided.al2
 | Código-fonte | `cmd/` e `internal/` ([Arquitetura](#arquitetura)) |
 | Empacotamento e infraestrutura | zip com o binário `bootstrap` (`make package`) e Terraform das functions em [`infra/`](infra/). Não há Dockerfile nem manifesto Kubernetes: as functions rodam no runtime `provided.al2023` |
 | Pipeline de CI/CD | [`.github/workflows/ci.yml`](.github/workflows/ci.yml) |
-| Evidência de cobertura | **91,4%** no `go test` e **90,6%** no SonarQube, publicados no resumo de cada [execução do CI](https://github.com/Kc1t/postech-tc4-lambda-auth/actions/workflows/ci.yml) ([Testes](#testes-e-evidência-de-cobertura)) |
+| Evidência de cobertura | **91,4%** no `go test` e **92,6%** no SonarQube, publicados no resumo de cada [execução do CI](https://github.com/Kc1t/postech-tc4-lambda-auth/actions/workflows/ci.yml) ([Testes](#testes-e-evidência-de-cobertura)) |
 | Documentação da arquitetura do serviço | este README, de [Responsabilidades](#responsabilidades) a [Decisões e limitações](#decisões-e-limitações) |
 | Contrato da API | [Contrato do `POST /auth`](#contrato-do-post-auth) e do [authorizer](#authorizer), mais a requisição "Token do cliente por CPF" da [collection Postman do os-service](https://github.com/Kc1t/postech-tc4-os-service/blob/main/postman_collection.json) |
 
@@ -322,7 +322,7 @@ Para a function rodando dentro do LocalStack, atrás de um gateway local, use o 
 
 O teste de integração (`make integration`, build tag `integration`) cobre: token emitido, aceito pelo authorizer e pela rota do cliente no os-service; **403** ao consultar o CPF de outra pessoa; 404 para CPF sem cadastro; e 500 com token interno errado.
 
-**Evidência de cobertura:** **91,4%** no `go test` e **90,6%** no SonarQube, com o quality gate aprovado (0 bugs, 0 vulnerabilidades, 0 code smells, 0% de duplicação). Cada execução do [CI](https://github.com/Kc1t/postech-tc4-lambda-auth/actions/workflows/ci.yml) publica no resumo do job a cobertura e a tabela do SonarQube; o pipeline reprova abaixo de 80%.
+**Evidência de cobertura:** **91,4%** no `go test` e **92,6%** no SonarQube, com o quality gate aprovado (0 bugs, 0 vulnerabilidades, 0 code smells, 0% de duplicação). Cada execução do [CI](https://github.com/Kc1t/postech-tc4-lambda-auth/actions/workflows/ci.yml) publica no resumo do job a cobertura e a tabela do SonarQube; o pipeline reprova abaixo de 80%.
 
 ## CI/CD e deploy
 
