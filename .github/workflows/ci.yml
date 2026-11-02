@@ -16,6 +16,7 @@ concurrency:
 
 env:
   TF_VERSION: 1.9.8
+  TFSEC_VERSION: v1.28.14
   GOLANGCI_LINT_VERSION: v2.15.0
   GOSEC_VERSION: v2.30.0
   MIN_COVERAGE: 80
@@ -113,9 +114,13 @@ jobs:
       - run: terraform init -backend=false -input=false
       - run: terraform validate
 
+      # Versão fixa e token do job: sem token, o download do tfsec pela API do GitHub esbarra no
+      # limite por IP do runner (60 requisições por hora) e derruba o job.
       - uses: aquasecurity/tfsec-action@v1.0.3
         with:
           working_directory: infra
+          version: ${{ env.TFSEC_VERSION }}
+          github_token: ${{ github.token }}
 
   # Só a main faz deploy: existe um ambiente só na AWS (ADR-0021), e o issuer depende do NLB do
   # os-service desse ambiente. Só roda com a variável AWS_DEPLOY_ENABLED=true: as credenciais do
@@ -176,16 +181,16 @@ jobs:
             --payload '{"body":"{\"cpf\":\"000\"}","requestContext":{"requestId":"ci-smoke"}}' out.json >/dev/null
           grep -q VALIDATION_ERROR out.json || { cat out.json; exit 1; }
 
-      - name: Publicar os invoke ARNs
+      # O infra-k8s acha as Lambdas pelo nome (data source), com o padrão <project>-<environment>-auth-*;
+      # as variáveis lambda_*_function_name de lá só são necessárias se o nome fugir do padrão.
+      - name: Resumo do deploy
         working-directory: infra
         run: |
           {
-            echo "### Ligar no postech-tc4-infra-k8s"
-            echo '```hcl'
-            echo "lambda_issuer_invoke_arn        = \"$(terraform output -raw issuer_invoke_arn)\""
-            echo "lambda_authorizer_invoke_arn    = \"$(terraform output -raw authorizer_invoke_arn)\""
-            echo "lambda_issuer_function_name     = \"$(terraform output -raw issuer_function_name)\""
-            echo "lambda_authorizer_function_name = \"$(terraform output -raw authorizer_function_name)\""
-            echo '```'
-            echo "os-service consultado: $(terraform output -raw os_service_url)"
+            echo "### Lambdas publicadas"
+            echo "- issuer: \`$(terraform output -raw issuer_function_name)\`"
+            echo "- authorizer: \`$(terraform output -raw authorizer_function_name)\`"
+            echo "- os-service consultado: $(terraform output -raw os_service_url)"
+            echo ""
+            echo "Rode o workflow Terraform do postech-tc4-infra-k8s para ligar as rotas do gateway a elas."
           } >> "$GITHUB_STEP_SUMMARY"
