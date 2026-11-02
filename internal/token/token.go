@@ -53,13 +53,15 @@ type Claims struct {
 	Document string
 }
 
+// Verify aceita só HS256 assinado com o segredo e com exp: um token sem expiração seria válido
+// para sempre na borda, e os serviços já o recusariam.
 func (i *Issuer) Verify(signed string) (Claims, error) {
 	parsed, err := jwt.Parse(signed, func(t *jwt.Token) (interface{}, error) {
 		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, jwt.ErrSignatureInvalid
 		}
 		return i.secret, nil
-	}, jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}))
+	}, jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}), jwt.WithExpirationRequired())
 	if err != nil {
 		return Claims{}, err
 	}

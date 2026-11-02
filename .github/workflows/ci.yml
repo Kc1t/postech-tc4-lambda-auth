@@ -181,16 +181,16 @@ jobs:
             --payload '{"body":"{\"cpf\":\"000\"}","requestContext":{"requestId":"ci-smoke"}}' out.json >/dev/null
           grep -q VALIDATION_ERROR out.json || { cat out.json; exit 1; }
 
-      - name: Publicar os invoke ARNs
+      # O infra-k8s acha as Lambdas pelo nome (data source), com o padrão <project>-<environment>-auth-*;
+      # as variáveis lambda_*_function_name de lá só são necessárias se o nome fugir do padrão.
+      - name: Resumo do deploy
         working-directory: infra
         run: |
           {
-            echo "### Ligar no postech-tc4-infra-k8s"
-            echo '```hcl'
-            echo "lambda_issuer_invoke_arn        = \"$(terraform output -raw issuer_invoke_arn)\""
-            echo "lambda_authorizer_invoke_arn    = \"$(terraform output -raw authorizer_invoke_arn)\""
-            echo "lambda_issuer_function_name     = \"$(terraform output -raw issuer_function_name)\""
-            echo "lambda_authorizer_function_name = \"$(terraform output -raw authorizer_function_name)\""
-            echo '```'
-            echo "os-service consultado: $(terraform output -raw os_service_url)"
+            echo "### Lambdas publicadas"
+            echo "- issuer: \`$(terraform output -raw issuer_function_name)\`"
+            echo "- authorizer: \`$(terraform output -raw authorizer_function_name)\`"
+            echo "- os-service consultado: $(terraform output -raw os_service_url)"
+            echo ""
+            echo "Rode o workflow Terraform do postech-tc4-infra-k8s para ligar as rotas do gateway a elas."
           } >> "$GITHUB_STEP_SUMMARY"
